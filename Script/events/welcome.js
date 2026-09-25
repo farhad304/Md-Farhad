@@ -34,10 +34,10 @@ let currentDesign = 0;
 module.exports.config = {
   name: "welcome",
   eventType: ["log:subscribe"],
-  version: "1.0.0",
-  credits: "SHAHADAT SAHU",
+  version: "1.0.1",
+  credits: "SHAHADAT SAHU - Fixed by Agent",
   description:
-    "Premium serial welcome banners",
+    "Premium serial welcome banners - Fixed profile picture",
   dependencies: {
     axios: "",
     canvas: "",
@@ -101,65 +101,145 @@ function getNextDesign() {
   return design;
 }
 
-async function getProfilePicture(
-  userID
-) {
-  if (
-    !userID ||
-    !FACEBOOK_ACCESS_TOKEN ||
-    FACEBOOK_ACCESS_TOKEN ===
-      "YOUR_FACEBOOK_ACCESS_TOKEN"
-  ) {
-    return null;
-  }
 
-  try {
-    const url =
-      `https://graph.facebook.com/${encodeURIComponent(
-        userID
-      )}/picture` +
-      "?width=2048" +
-      "&height=2048" +
-      "&type=large" +
-      `&access_token=${encodeURIComponent(
+async function getProfilePicture(userID) {
+  if (!userID) return null;
+  const uid = String(userID).trim();
+  if (!uid) return null;
+
+  const COMMON_HEADERS = {
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.facebook.com/",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache"
+  };
+
+  const fetchAsImage = async (url, extraHeaders = {}) => {
+    try {
+      const res = await axios.get(url, {
+        responseType: "arraybuffer",
+        timeout: 20000,
+        maxRedirects: 5,
+        headers: { ...COMMON_HEADERS, ...extraHeaders },
+        validateStatus: (s) => s >= 200 && s < 400
+      });
+
+      if (!res.data || res.data.length < 800) return null;
+
+      const contentType = (res.headers["content-type"] || "").toLowerCase();
+
+      if (contentType.includes("text/html") || contentType.includes("application/json")) {
+        const preview = Buffer.from(res.data).toString("utf8", 0, 300);
+        return null;
+      }
+
+      if (contentType && !contentType.startsWith("image/") && contentType !== "application/octet-stream") {
+        if (res.data.length < 2000) return null;
+      }
+
+      try {
+        const img = await loadImage(Buffer.from(res.data));
+        return img;
+      } catch (loadErr) {
+        return null;
+      }
+    } catch (err) {
+      return null;
+    }
+  };
+
+  if (
+    FACEBOOK_ACCESS_TOKEN &&
+    !FACEBOOK_ACCESS_TOKEN.includes("YOUR_FACEBOOK_ACCESS_TOKEN") &&
+    FACEBOOK_ACCESS_TOKEN.includes("|")
+  ) {
+    try {
+      const apiUrl = `https://graph.facebook.com/${encodeURIComponent(
+        uid
+      )}/picture?width=720&height=720&redirect=false&access_token=${encodeURIComponent(
         FACEBOOK_ACCESS_TOKEN
       )}`;
 
-    const response =
-      await axios.get(
-        url,
-        {
-          responseType:
-            "arraybuffer",
-          timeout: 20000,
-          maxRedirects: 5,
-          headers: {
-            "User-Agent":
-              "Mozilla/5.0"
-          }
+      const jsonRes = await axios.get(apiUrl, {
+        timeout: 15000,
+        headers: {
+          "User-Agent": COMMON_HEADERS["User-Agent"]
+        },
+        validateStatus: (s) => s < 500
+      });
+
+      if (jsonRes.data && jsonRes.data.data && jsonRes.data.data.url) {
+        const cdnUrl = jsonRes.data.data.url;
+        const img = await fetchAsImage(cdnUrl);
+        if (img) {
+          console.log(`[WELCOME] ✅ Profile loaded via redirect=false for ${uid}`);
+          return img;
         }
-      );
-
-    if (
-      !response.data ||
-      response.data.length < 100
-    ) {
-      return null;
+      } else if (jsonRes.data && jsonRes.data.error) {
+        console.error(`[WELCOME] Graph API error for ${uid}:`, jsonRes.data.error.message);
+      }
+    } catch (e) {
+      console.error(`[WELCOME] redirect=false failed for ${uid}:`, e.message);
     }
-
-    return await loadImage(
-      Buffer.from(
-        response.data
-      )
-    );
-  } catch (error) {
-    console.error(
-      `[WELCOME IMAGE ERROR: ${userID}]`,
-      error.message
-    );
-
-    return null;
   }
+
+  const noTokenUrls = [
+    `https://graph.facebook.com/${encodeURIComponent(uid)}/picture?width=720&height=720&type=large`,
+    `https://graph.facebook.com/v18.0/${encodeURIComponent(uid)}/picture?width=720&height=720&type=large`,
+    `https://graph.facebook.com/${encodeURIComponent(uid)}/picture?width=720&height=720`,
+    `https://graph.facebook.com/${encodeURIComponent(uid)}/picture?type=large&width=720&height=720`
+  ];
+
+  for (const url of noTokenUrls) {
+    const img = await fetchAsImage(url);
+    if (img) {
+      console.log(`[WELCOME] ✅ Profile loaded via no-token for ${uid}: ${url.split('?')[0]}`);
+      return img;
+    }
+  }
+
+  if (
+    FACEBOOK_ACCESS_TOKEN &&
+    !FACEBOOK_ACCESS_TOKEN.includes("YOUR_FACEBOOK_ACCESS_TOKEN")
+  ) {
+    const tokenUrls = [
+      `https://graph.facebook.com/${encodeURIComponent(
+        uid
+      )}/picture?width=720&height=720&type=large&access_token=${encodeURIComponent(
+        FACEBOOK_ACCESS_TOKEN
+      )}`,
+      `https://graph.facebook.com/v18.0/${encodeURIComponent(
+        uid
+      )}/picture?width=720&height=720&type=large&access_token=${encodeURIComponent(
+        FACEBOOK_ACCESS_TOKEN
+      )}`
+    ];
+
+    for (const url of tokenUrls) {
+      const img = await fetchAsImage(url);
+      if (img) {
+        console.log(`[WELCOME] ✅ Profile loaded via token for ${uid}`);
+        return img;
+      }
+    }
+  }
+
+  try {
+    const altUrl = `https://platform-lookaside.fbsbx.com/platform/profilepic/?asid=${encodeURIComponent(
+      uid
+    )}&width=720&height=720`;
+    const img = await fetchAsImage(altUrl);
+    if (img) {
+      console.log(`[WELCOME] ✅ Profile loaded via platform-lookaside for ${uid}`);
+      return img;
+    }
+  } catch {}
+
+  console.error(`[WELCOME] ❌ All methods failed for ${uid} - using fallback avatar`);
+  return null;
 }
 
 function getUserInfoSafe(
