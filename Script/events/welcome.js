@@ -35,15 +35,23 @@ module.exports.config = {
   name: "welcome",
   eventType: ["log:subscribe"],
   version: "1.0.1",
-  credits: "SHAHADAT SAHU - Fixed by Agent",
+  credits: "SHAHADAT SAHU",
   description:
-    "Premium serial welcome banners - Fixed profile picture",
+    "Premium serial welcome banners",
   dependencies: {
     axios: "",
     canvas: "",
     "fs-extra": "",
     path: ""
   }
+};
+
+module.exports.onLoad = async function ({ api, models }) {
+  try {
+    await fs.ensureDir(CACHE_DIR);
+    await fs.ensureDir(FONT_DIR);
+    await ensureFont();
+  } catch (e) {}
 };
 
 async function ensureFont() {
@@ -57,22 +65,31 @@ async function ensureFont() {
     );
 
     if (!fs.existsSync(FONT_PATH)) {
-      const response =
-        await axios.get(
-          FONT_URL,
-          {
-            responseType:
-              "arraybuffer",
-            timeout: 30000
-          }
-        );
-
-      await fs.writeFile(
-        FONT_PATH,
-        Buffer.from(
-          response.data
-        )
+      const localFallback = path.join(
+        __dirname,
+        "../../node_modules/@electron-fonts/noto-sans-bengali/fonts/NotoSansBengali-Regular.ttf"
       );
+
+      if (fs.existsSync(localFallback)) {
+        await fs.copyFile(localFallback, FONT_PATH);
+      } else {
+        const response =
+          await axios.get(
+            FONT_URL,
+            {
+              responseType:
+                "arraybuffer",
+              timeout: 30000
+            }
+          );
+
+        await fs.writeFile(
+          FONT_PATH,
+          Buffer.from(
+            response.data
+          )
+        );
+      }
     }
 
     registerFont(
@@ -102,7 +119,7 @@ function getNextDesign() {
 }
 
 
-async function getProfilePicture(userID) {
+async function getProfilePicture(userID, api, userInfo, threadInfo) {
   if (!userID) return null;
   const uid = String(userID).trim();
   if (!uid) return null;
@@ -118,8 +135,28 @@ async function getProfilePicture(userID) {
   };
 
   const fetchAsImage = async (url, extraHeaders = {}) => {
+    if (!url || typeof url !== "string") return null;
+    const trimmed = url.trim();
+    if (!trimmed) return null;
+
+    if (trimmed.startsWith("data:image/")) {
+      try {
+        const base64Data = trimmed.split(",")[1];
+        if (base64Data) {
+          const img = await loadImage(Buffer.from(base64Data, "base64"));
+          return img;
+        }
+      } catch (e) {
+        return null;
+      }
+    }
+
+    if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+      return null;
+    }
+
     try {
-      const res = await axios.get(url, {
+      const res = await axios.get(trimmed, {
         responseType: "arraybuffer",
         timeout: 20000,
         maxRedirects: 5,
@@ -132,7 +169,6 @@ async function getProfilePicture(userID) {
       const contentType = (res.headers["content-type"] || "").toLowerCase();
 
       if (contentType.includes("text/html") || contentType.includes("application/json")) {
-        const preview = Buffer.from(res.data).toString("utf8", 0, 300);
         return null;
       }
 
@@ -150,6 +186,57 @@ async function getProfilePicture(userID) {
       return null;
     }
   };
+
+  const extractUrls = (info) => {
+    if (!info || typeof info !== "object") return [];
+    const candidates = [
+      info.thumbSrc,
+      info.profilePicUrl,
+      info.avatarUrl,
+      info.avatar,
+      info.picture,
+      info.profile_picture?.uri,
+      info.big_image_src?.uri,
+      info.url && typeof info.url === "string" && (info.url.includes("fbcdn.net") || info.url.includes("fbsbx.com")) ? info.url : null
+    ];
+    return candidates.filter(u => u && typeof u === "string" && u.startsWith("http"));
+  };
+
+  if (userInfo) {
+    for (const url of extractUrls(userInfo)) {
+      const img = await fetchAsImage(url);
+      if (img) {
+        return img;
+      }
+    }
+  }
+
+  if (threadInfo && Array.isArray(threadInfo.userInfo)) {
+    const threadUser = threadInfo.userInfo.find(u => u && String(u.id) === uid);
+    if (threadUser) {
+      for (const url of extractUrls(threadUser)) {
+        const img = await fetchAsImage(url);
+        if (img) {
+          return img;
+        }
+      }
+    }
+  }
+
+  const activeApi = api || (global.client && global.client.api) || global.api;
+  if (activeApi) {
+    try {
+      const fetchedInfo = await getUserInfoSafe(activeApi, uid);
+      if (fetchedInfo) {
+        for (const url of extractUrls(fetchedInfo)) {
+          const img = await fetchAsImage(url);
+          if (img) {
+            return img;
+          }
+        }
+      }
+    } catch (e) {}
+  }
 
   if (
     FACEBOOK_ACCESS_TOKEN &&
@@ -175,15 +262,10 @@ async function getProfilePicture(userID) {
         const cdnUrl = jsonRes.data.data.url;
         const img = await fetchAsImage(cdnUrl);
         if (img) {
-          console.log(`[WELCOME] ✅ Profile loaded via redirect=false for ${uid}`);
           return img;
         }
-      } else if (jsonRes.data && jsonRes.data.error) {
-        console.error(`[WELCOME] Graph API error for ${uid}:`, jsonRes.data.error.message);
       }
-    } catch (e) {
-      console.error(`[WELCOME] redirect=false failed for ${uid}:`, e.message);
-    }
+    } catch (e) {}
   }
 
   const noTokenUrls = [
@@ -196,7 +278,6 @@ async function getProfilePicture(userID) {
   for (const url of noTokenUrls) {
     const img = await fetchAsImage(url);
     if (img) {
-      console.log(`[WELCOME] ✅ Profile loaded via no-token for ${uid}: ${url.split('?')[0]}`);
       return img;
     }
   }
@@ -221,7 +302,6 @@ async function getProfilePicture(userID) {
     for (const url of tokenUrls) {
       const img = await fetchAsImage(url);
       if (img) {
-        console.log(`[WELCOME] ✅ Profile loaded via token for ${uid}`);
         return img;
       }
     }
@@ -233,12 +313,10 @@ async function getProfilePicture(userID) {
     )}&width=720&height=720`;
     const img = await fetchAsImage(altUrl);
     if (img) {
-      console.log(`[WELCOME] ✅ Profile loaded via platform-lookaside for ${uid}`);
       return img;
     }
   } catch {}
 
-  console.error(`[WELCOME] ❌ All methods failed for ${uid} - using fallback avatar`);
   return null;
 }
 
@@ -248,12 +326,25 @@ function getUserInfoSafe(
 ) {
   return new Promise(
     resolve => {
+      const activeApi =
+        api ||
+        (global.client &&
+          global.client.api) ||
+        global.api;
+
       if (
-        !api ||
+        !activeApi ||
         !userID ||
-        typeof api.getUserInfo !==
+        typeof activeApi.getUserInfo !==
           "function"
       ) {
+        return resolve(null);
+      }
+
+      const uid =
+        String(userID).trim();
+
+      if (!uid) {
         return resolve(null);
       }
 
@@ -270,38 +361,35 @@ function getUserInfoSafe(
 
           completed = true;
 
-          if (error) {
+          if (error || !data) {
             return resolve(null);
           }
 
-          if (
-            data &&
-            data[userID]
-          ) {
-            return resolve(
-              data[userID]
-            );
-          }
-
-          if (
-            data &&
-            data.data &&
-            data.data[userID]
-          ) {
-            return resolve(
-              data.data[userID]
-            );
-          }
+          const user =
+            data[uid] ||
+            data[userID] ||
+            (Array.isArray(data)
+              ? data.find(
+                  u =>
+                    u &&
+                    (String(u.id) === uid ||
+                      String(u.userID) === uid)
+                ) || data[0]
+              : null) ||
+            (data.data &&
+              (data.data[uid] ||
+                data.data[userID])) ||
+            data;
 
           resolve(
-            data || null
+            user || null
           );
         };
 
       try {
         const result =
-          api.getUserInfo(
-            userID,
+          activeApi.getUserInfo(
+            uid,
             done
           );
 
@@ -318,13 +406,25 @@ function getUserInfoSafe(
               ),
             error =>
               done(
-                error
+                error,
+                null
               )
           );
         }
       } catch (error) {
-        done(error);
+        done(error, null);
       }
+
+      setTimeout(
+        () =>
+          done(
+            new Error(
+              "Timeout"
+            ),
+            null
+          ),
+        10000
+      );
     }
   );
 }
@@ -1890,7 +1990,11 @@ async function createWelcomeBanner(
   groupName,
   memberCount,
   addedByID,
-  addedByName
+  addedByName,
+  api,
+  memberInfo,
+  addedByInfo,
+  threadInfo
 ) {
   await fs.ensureDir(
     CACHE_DIR
@@ -1921,10 +2025,16 @@ async function createWelcomeBanner(
   ] =
     await Promise.all([
       getProfilePicture(
-        userID
+        userID,
+        api,
+        memberInfo,
+        threadInfo
       ),
       getProfilePicture(
-        addedByID
+        addedByID,
+        api,
+        addedByInfo,
+        threadInfo
       )
     ]);
 
@@ -2016,7 +2126,11 @@ async function createWelcomeBanner(
 module.exports.run =
   async function ({
     api,
-    event
+    event,
+    Users,
+    Threads,
+    Currencies,
+    models
   }) {
     try {
       if (!event) {
@@ -2052,10 +2166,26 @@ module.exports.run =
         return;
       }
 
-      const botID =
-        String(
-          api.getCurrentUserID()
-        );
+      const activeApi =
+        api ||
+        (global.client &&
+          global.client.api) ||
+        global.api;
+
+      if (!activeApi) {
+        return;
+      }
+
+      let botID = "";
+      try {
+        if (typeof activeApi.getCurrentUserID === "function") {
+          botID = String(
+            activeApi.getCurrentUserID()
+          );
+        }
+      } catch (e) {
+        botID = "";
+      }
 
       const participants =
         data.addedParticipants;
@@ -2072,16 +2202,26 @@ module.exports.run =
         return;
       }
 
-      const threadInfo =
-        await api.getThreadInfo(
-          threadID
-        );
+      let threadInfo = null;
+      try {
+        if (typeof activeApi.getThreadInfo === "function") {
+          threadInfo =
+            await activeApi.getThreadInfo(
+              threadID
+            );
+        }
+      } catch (e) {
+        threadInfo = null;
+      }
 
       const groupName =
-        threadInfo &&
-        threadInfo.threadName
-          ? threadInfo.threadName
-          : "Group Chat";
+        (threadInfo &&
+          threadInfo.threadName) ||
+        (global.data &&
+          global.data.threadInfo &&
+          global.data.threadInfo.get(String(threadID)) &&
+          global.data.threadInfo.get(String(threadID)).threadName) ||
+        "Group Chat";
 
       const memberCount =
         threadInfo &&
@@ -2102,18 +2242,20 @@ module.exports.run =
       let addedByName =
         "Group Admin";
 
+      let addedByInfo = null;
+
       if (addedByID) {
-        const info =
+        addedByInfo =
           await getUserInfoSafe(
-            api,
+            activeApi,
             addedByID
           );
 
-        if (info) {
+        if (addedByInfo) {
           addedByName =
-            info.name ||
-            info.fullName ||
-            info.firstName ||
+            addedByInfo.name ||
+            addedByInfo.fullName ||
+            addedByInfo.firstName ||
             "Group Admin";
         }
       }
@@ -2129,10 +2271,38 @@ module.exports.run =
           continue;
         }
 
+        let memberInfo =
+          await getUserInfoSafe(
+            activeApi,
+            userID
+          );
+
         const userName =
+          (memberInfo &&
+            (memberInfo.name ||
+              memberInfo.fullName)) ||
           participant.fullName ||
           participant.name ||
           "New Member";
+
+        if (global.data) {
+          if (global.data.userName && userName) {
+            global.data.userName.set(
+              String(userID),
+              userName
+            );
+          }
+          if (
+            global.data.allUserID &&
+            !global.data.allUserID.includes(
+              String(userID)
+            )
+          ) {
+            global.data.allUserID.push(
+              String(userID)
+            );
+          }
+        }
 
         let imagePath =
           null;
@@ -2145,8 +2315,17 @@ module.exports.run =
               groupName,
               memberCount,
               addedByID,
-              addedByName
+              addedByName,
+              activeApi,
+              memberInfo,
+              addedByInfo,
+              threadInfo
             );
+
+          const botName =
+            (global.config &&
+              global.config.BOTNAME) ||
+            "𝐁𝐎𝐓";
 
           const messageBody =
 `╭•┄┅═══❁🌺❁═══┅┄•╮
@@ -2181,7 +2360,7 @@ ${memberCount} নম্বর সদস্য! 🎉
 
 🌺 স্বাগতম ও শুভকামনা 🌺
 
-🌺 শুভেচ্ছা — ◈━━꯭${global.config.BOTNAME}꯭━━◈`;
+🌺 শুভেচ্ছা — ◈━━꯭${botName}꯭━━◈`;
 
           await new Promise(
             (
@@ -2198,7 +2377,7 @@ ${memberCount} নম্বর সদস্য! 🎉
                 reject
               );
 
-              api.sendMessage(
+              activeApi.sendMessage(
                 {
                   body:
                     messageBody,
