@@ -7,21 +7,8 @@ const {
 const fs = require("fs-extra");
 const path = require("path");
 
-/*
- * ==========================================
- * WELCOME BOT CONFIG
- * ==========================================
- */
-
-// Facebook token সরাসরি কোডে রাখবে না।
-// Environment variable ব্যবহার করো:
-// FACEBOOK_ACCESS_TOKEN=YOUR_TOKEN
 const FACEBOOK_ACCESS_TOKEN =
-  process.env.FACEBOOK_ACCESS_TOKEN || "";
-
-const botName =
-  process.env.BOT_NAME ||
-  "Sahu Bot";
+  "6628568379|c1e620fa708a1d5696fb991c1bde5662";
 
 const UHAs_DIR =
   path.join(__dirname, "Uhas");
@@ -44,33 +31,28 @@ const FONT_URL =
 let fontReady = false;
 let currentDesign = 0;
 
-
-/*
- * ==========================================
- * MODULE CONFIG
- * ==========================================
- */
-
 module.exports.config = {
   name: "welcome",
   eventType: ["log:subscribe"],
-  version: "1.0.2",
-  credits: "SHAHADAT SAHU - Fixed",
+  version: "1.0.1",
+  credits: "SHAHADAT SAHU",
   description:
-    "Premium serial welcome banners with profile pictures",
+    "Premium serial welcome banners",
   dependencies: {
     axios: "",
     canvas: "",
-    "fs-extra": ""
+    "fs-extra": "",
+    path: ""
   }
 };
 
-
-/*
- * ==========================================
- * FONT
- * ==========================================
- */
+module.exports.onLoad = async function ({ api, models }) {
+  try {
+    await fs.ensureDir(CACHE_DIR);
+    await fs.ensureDir(FONT_DIR);
+    await ensureFont();
+  } catch (e) {}
+};
 
 async function ensureFont() {
   if (fontReady) {
@@ -78,26 +60,36 @@ async function ensureFont() {
   }
 
   try {
-    await fs.ensureDir(FONT_DIR);
+    await fs.ensureDir(
+      FONT_DIR
+    );
 
     if (!fs.existsSync(FONT_PATH)) {
-      console.log(
-        "[WELCOME] Downloading Bengali font..."
+      const localFallback = path.join(
+        __dirname,
+        "../../node_modules/@electron-fonts/noto-sans-bengali/fonts/NotoSansBengali-Regular.ttf"
       );
 
-      const response =
-        await axios.get(
-          FONT_URL,
-          {
-            responseType: "arraybuffer",
-            timeout: 30000
-          }
+      if (fs.existsSync(localFallback)) {
+        await fs.copyFile(localFallback, FONT_PATH);
+      } else {
+        const response =
+          await axios.get(
+            FONT_URL,
+            {
+              responseType:
+                "arraybuffer",
+              timeout: 30000
+            }
+          );
+
+        await fs.writeFile(
+          FONT_PATH,
+          Buffer.from(
+            response.data
+          )
         );
-
-      await fs.writeFile(
-        FONT_PATH,
-        Buffer.from(response.data)
-      );
+      }
     }
 
     registerFont(
@@ -108,29 +100,17 @@ async function ensureFont() {
     );
 
     fontReady = true;
-
-    console.log(
-      "[WELCOME] Bengali font ready"
-    );
   } catch (error) {
     console.error(
       "[WELCOME FONT ERROR]",
       error.message
     );
-
-    fontReady = false;
   }
 }
 
-
-/*
- * ==========================================
- * DESIGN ROTATION
- * ==========================================
- */
-
 function getNextDesign() {
-  const design = currentDesign;
+  const design =
+    currentDesign;
 
   currentDesign =
     (currentDesign + 1) % 4;
@@ -139,226 +119,179 @@ function getNextDesign() {
 }
 
 
-/*
- * ==========================================
- * PROFILE PICTURE
- * ==========================================
- */
-
-async function getProfilePicture(userID) {
-  if (!userID) {
-    return null;
-  }
-
-  const uid =
-    String(userID).trim();
-
-  if (!uid) {
-    return null;
-  }
+async function getProfilePicture(userID, api, userInfo, threadInfo) {
+  if (!userID) return null;
+  const uid = String(userID).trim();
+  if (!uid) return null;
 
   const COMMON_HEADERS = {
     "User-Agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
-
-    "Accept":
-      "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-
-    "Accept-Language":
-      "en-US,en;q=0.9",
-
-    "Referer":
-      "https://www.facebook.com/",
-
-    "Cache-Control":
-      "no-cache",
-
-    "Pragma":
-      "no-cache"
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.facebook.com/",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache"
   };
 
+  const fetchAsImage = async (url, extraHeaders = {}) => {
+    if (!url || typeof url !== "string") return null;
+    const trimmed = url.trim();
+    if (!trimmed) return null;
 
-  async function fetchAsImage(
-    url,
-    extraHeaders = {}
-  ) {
+    if (trimmed.startsWith("data:image/")) {
+      try {
+        const base64Data = trimmed.split(",")[1];
+        if (base64Data) {
+          const img = await loadImage(Buffer.from(base64Data, "base64"));
+          return img;
+        }
+      } catch (e) {
+        return null;
+      }
+    }
+
+    if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+      return null;
+    }
+
     try {
-      const response =
-        await axios.get(
-          url,
-          {
-            responseType:
-              "arraybuffer",
+      const res = await axios.get(trimmed, {
+        responseType: "arraybuffer",
+        timeout: 20000,
+        maxRedirects: 5,
+        headers: { ...COMMON_HEADERS, ...extraHeaders },
+        validateStatus: (s) => s >= 200 && s < 400
+      });
 
-            timeout:
-              20000,
+      if (!res.data || res.data.length < 800) return null;
 
-            maxRedirects:
-              5,
+      const contentType = (res.headers["content-type"] || "").toLowerCase();
 
-            headers: {
-              ...COMMON_HEADERS,
-              ...extraHeaders
-            },
-
-            validateStatus:
-              status =>
-                status >= 200 &&
-                status < 400
-          }
-        );
-
-      if (
-        !response.data ||
-        response.data.length < 800
-      ) {
+      if (contentType.includes("text/html") || contentType.includes("application/json")) {
         return null;
       }
 
-      const contentType =
-        (
-          response.headers[
-            "content-type"
-          ] || ""
-        ).toLowerCase();
-
-      if (
-        contentType.includes(
-          "text/html"
-        ) ||
-        contentType.includes(
-          "application/json"
-        )
-      ) {
-        return null;
+      if (contentType && !contentType.startsWith("image/") && contentType !== "application/octet-stream") {
+        if (res.data.length < 2000) return null;
       }
 
       try {
-        const image =
-          await loadImage(
-            Buffer.from(
-              response.data
-            )
-          );
-
-        return image;
-      } catch {
+        const img = await loadImage(Buffer.from(res.data));
+        return img;
+      } catch (loadErr) {
         return null;
       }
-    } catch {
+    } catch (err) {
       return null;
+    }
+  };
+
+  const extractUrls = (info) => {
+    if (!info || typeof info !== "object") return [];
+    const candidates = [
+      info.thumbSrc,
+      info.profilePicUrl,
+      info.avatarUrl,
+      info.avatar,
+      info.picture,
+      info.profile_picture?.uri,
+      info.big_image_src?.uri,
+      info.url && typeof info.url === "string" && (info.url.includes("fbcdn.net") || info.url.includes("fbsbx.com")) ? info.url : null
+    ];
+    return candidates.filter(u => u && typeof u === "string" && u.startsWith("http"));
+  };
+
+  if (userInfo) {
+    for (const url of extractUrls(userInfo)) {
+      const img = await fetchAsImage(url);
+      if (img) {
+        return img;
+      }
     }
   }
 
+  if (threadInfo && Array.isArray(threadInfo.userInfo)) {
+    const threadUser = threadInfo.userInfo.find(u => u && String(u.id) === uid);
+    if (threadUser) {
+      for (const url of extractUrls(threadUser)) {
+        const img = await fetchAsImage(url);
+        if (img) {
+          return img;
+        }
+      }
+    }
+  }
 
-  /*
-   * Graph API
-   */
+  const activeApi = api || (global.client && global.client.api) || global.api;
+  if (activeApi) {
+    try {
+      const fetchedInfo = await getUserInfoSafe(activeApi, uid);
+      if (fetchedInfo) {
+        for (const url of extractUrls(fetchedInfo)) {
+          const img = await fetchAsImage(url);
+          if (img) {
+            return img;
+          }
+        }
+      }
+    } catch (e) {}
+  }
 
   if (
     FACEBOOK_ACCESS_TOKEN &&
+    !FACEBOOK_ACCESS_TOKEN.includes("YOUR_FACEBOOK_ACCESS_TOKEN") &&
     FACEBOOK_ACCESS_TOKEN.includes("|")
   ) {
     try {
-      const apiURL =
-        `https://graph.facebook.com/${encodeURIComponent(
-          uid
-        )}/picture?width=720&height=720&redirect=false&access_token=${encodeURIComponent(
-          FACEBOOK_ACCESS_TOKEN
-        )}`;
+      const apiUrl = `https://graph.facebook.com/${encodeURIComponent(
+        uid
+      )}/picture?width=720&height=720&redirect=false&access_token=${encodeURIComponent(
+        FACEBOOK_ACCESS_TOKEN
+      )}`;
 
-      const response =
-        await axios.get(
-          apiURL,
-          {
-            timeout: 15000,
-            validateStatus:
-              status => status < 500
-          }
-        );
+      const jsonRes = await axios.get(apiUrl, {
+        timeout: 15000,
+        headers: {
+          "User-Agent": COMMON_HEADERS["User-Agent"]
+        },
+        validateStatus: (s) => s < 500
+      });
 
-      if (
-        response.data &&
-        response.data.data &&
-        response.data.data.url
-      ) {
-        const image =
-          await fetchAsImage(
-            response.data.data.url
-          );
-
-        if (image) {
-          console.log(
-            `[WELCOME] Profile loaded for ${uid}`
-          );
-
-          return image;
+      if (jsonRes.data && jsonRes.data.data && jsonRes.data.data.url) {
+        const cdnUrl = jsonRes.data.data.url;
+        const img = await fetchAsImage(cdnUrl);
+        if (img) {
+          return img;
         }
       }
-
-      if (
-        response.data &&
-        response.data.error
-      ) {
-        console.error(
-          "[WELCOME GRAPH ERROR]",
-          response.data.error.message
-        );
-      }
-    } catch (error) {
-      console.error(
-        "[WELCOME GRAPH ERROR]",
-        error.message
-      );
-    }
+    } catch (e) {}
   }
 
-
-  /*
-   * Fallback URLs
-   */
-
-  const fallbackURLs = [
-    `https://graph.facebook.com/${encodeURIComponent(
-      uid
-    )}/picture?width=720&height=720&type=large`,
-
-    `https://graph.facebook.com/v18.0/${encodeURIComponent(
-      uid
-    )}/picture?width=720&height=720&type=large`,
-
-    `https://graph.facebook.com/${encodeURIComponent(
-      uid
-    )}/picture?width=720&height=720`
+  const noTokenUrls = [
+    `https://graph.facebook.com/${encodeURIComponent(uid)}/picture?width=720&height=720&type=large`,
+    `https://graph.facebook.com/v18.0/${encodeURIComponent(uid)}/picture?width=720&height=720&type=large`,
+    `https://graph.facebook.com/${encodeURIComponent(uid)}/picture?width=720&height=720`,
+    `https://graph.facebook.com/${encodeURIComponent(uid)}/picture?type=large&width=720&height=720`
   ];
 
-
-  for (
-    const url of fallbackURLs
-  ) {
-    const image =
-      await fetchAsImage(url);
-
-    if (image) {
-      return image;
+  for (const url of noTokenUrls) {
+    const img = await fetchAsImage(url);
+    if (img) {
+      return img;
     }
   }
 
-
-  /*
-   * Token fallback
-   */
-
   if (
-    FACEBOOK_ACCESS_TOKEN
+    FACEBOOK_ACCESS_TOKEN &&
+    !FACEBOOK_ACCESS_TOKEN.includes("YOUR_FACEBOOK_ACCESS_TOKEN")
   ) {
-    const tokenURLs = [
+    const tokenUrls = [
       `https://graph.facebook.com/${encodeURIComponent(
         uid
       )}/picture?width=720&height=720&type=large&access_token=${encodeURIComponent(
         FACEBOOK_ACCESS_TOKEN
       )}`,
-
       `https://graph.facebook.com/v18.0/${encodeURIComponent(
         uid
       )}/picture?width=720&height=720&type=large&access_token=${encodeURIComponent(
@@ -366,36 +299,26 @@ async function getProfilePicture(userID) {
       )}`
     ];
 
-    for (
-      const url of tokenURLs
-    ) {
-      const image =
-        await fetchAsImage(url);
-
-      if (image) {
-        return image;
+    for (const url of tokenUrls) {
+      const img = await fetchAsImage(url);
+      if (img) {
+        return img;
       }
     }
   }
 
-
-  /*
-   * Final fallback
-   */
-
-  console.log(
-    `[WELCOME] Profile picture unavailable for ${uid}`
-  );
+  try {
+    const altUrl = `https://platform-lookaside.fbsbx.com/platform/profilepic/?asid=${encodeURIComponent(
+      uid
+    )}&width=720&height=720`;
+    const img = await fetchAsImage(altUrl);
+    if (img) {
+      return img;
+    }
+  } catch {}
 
   return null;
 }
-
-
-/*
- * ==========================================
- * SAFE USER INFO
- * ==========================================
- */
 
 function getUserInfoSafe(
   api,
@@ -403,59 +326,70 @@ function getUserInfoSafe(
 ) {
   return new Promise(
     resolve => {
+      const activeApi =
+        api ||
+        (global.client &&
+          global.client.api) ||
+        global.api;
+
       if (
-        !api ||
+        !activeApi ||
         !userID ||
-        typeof api.getUserInfo !==
+        typeof activeApi.getUserInfo !==
           "function"
       ) {
         return resolve(null);
       }
 
+      const uid =
+        String(userID).trim();
+
+      if (!uid) {
+        return resolve(null);
+      }
+
       let completed = false;
 
-      const done = (
-        error,
-        data
-      ) => {
-        if (completed) {
-          return;
-        }
+      const done =
+        (
+          error,
+          data
+        ) => {
+          if (completed) {
+            return;
+          }
 
-        completed = true;
+          completed = true;
 
-        if (error) {
-          return resolve(null);
-        }
+          if (error || !data) {
+            return resolve(null);
+          }
 
-        if (
-          data &&
-          data[userID]
-        ) {
-          return resolve(
-            data[userID]
+          const user =
+            data[uid] ||
+            data[userID] ||
+            (Array.isArray(data)
+              ? data.find(
+                  u =>
+                    u &&
+                    (String(u.id) === uid ||
+                      String(u.userID) === uid)
+                ) || data[0]
+              : null) ||
+            (data.data &&
+              (data.data[uid] ||
+                data.data[userID])) ||
+            data;
+
+          resolve(
+            user || null
           );
-        }
-
-        if (
-          data &&
-          data.data &&
-          data.data[userID]
-        ) {
-          return resolve(
-            data.data[userID]
-          );
-        }
-
-        resolve(
-          data || null
-        );
-      };
+        };
 
       try {
         const result =
-          api.getUserInfo(
-            userID,
+          activeApi.getUserInfo(
+            uid,
             done
           );
 
@@ -471,24 +405,33 @@ function getUserInfoSafe(
                 data
               ),
             error =>
-              done(error)
+              done(
+                error,
+                null
+              )
           );
         }
       } catch (error) {
-        done(error);
+        done(error, null);
       }
+
+      setTimeout(
+        () =>
+          done(
+            new Error(
+              "Timeout"
+            ),
+            null
+          ),
+        10000
+      );
     }
   );
 }
 
-
-/*
- * ==========================================
- * MEMBER ORDINAL
- * ==========================================
- */
-
-function getOrdinal(number) {
+function getOrdinal(
+  number
+) {
   const n =
     Number(number);
 
@@ -524,13 +467,6 @@ function getOrdinal(number) {
   return `${n}th Member`;
 }
 
-
-/*
- * ==========================================
- * TEXT FIT
- * ==========================================
- */
-
 function fitText(
   ctx,
   text,
@@ -562,13 +498,6 @@ function fitText(
 
   return 12;
 }
-
-
-/*
- * ==========================================
- * ROUNDED RECT
- * ==========================================
- */
 
 function roundedRect(
   ctx,
@@ -627,13 +556,6 @@ function roundedRect(
   ctx.closePath();
 }
 
-
-/*
- * ==========================================
- * COVER IMAGE
- * ==========================================
- */
-
 function drawCoverImage(
   ctx,
   image,
@@ -673,13 +595,6 @@ function drawCoverImage(
   );
 }
 
-
-/*
- * ==========================================
- * AVATAR
- * ==========================================
- */
-
 function drawAvatar(
   ctx,
   image,
@@ -692,6 +607,11 @@ function drawAvatar(
   ctx.save();
 
   ctx.globalAlpha = 1;
+  ctx.shadowColor =
+    "transparent";
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetX = 0;
+  ctx.shadowOffsetY = 0;
 
   ctx.beginPath();
 
@@ -748,7 +668,8 @@ function drawAvatar(
     );
   } else {
     ctx.fillStyle =
-      fallback || "#202020";
+      fallback ||
+      "#202020";
 
     ctx.fillRect(
       x - radius,
@@ -764,7 +685,8 @@ function drawAvatar(
 
     ctx.arc(
       x,
-      y - radius * 0.22,
+      y -
+        radius * 0.22,
       radius * 0.22,
       0,
       Math.PI * 2
@@ -776,7 +698,8 @@ function drawAvatar(
 
     ctx.arc(
       x,
-      y + radius * 0.38,
+      y +
+        radius * 0.38,
       radius * 0.45,
       Math.PI,
       Math.PI * 2
@@ -789,7 +712,8 @@ function drawAvatar(
 
   ctx.save();
 
-  ctx.globalAlpha = 0.70;
+  ctx.globalAlpha =
+    0.70;
 
   ctx.beginPath();
 
@@ -811,13 +735,6 @@ function drawAvatar(
   ctx.restore();
 }
 
-
-/*
- * ==========================================
- * PARTICLES
- * ==========================================
- */
-
 function drawParticles(
   ctx,
   width,
@@ -833,17 +750,22 @@ function drawParticles(
     i++
   ) {
     const x =
-      Math.random() * width;
+      Math.random() *
+      width;
 
     const y =
-      Math.random() * height;
+      Math.random() *
+      height;
 
     const size =
-      Math.random() * 1.4 + 0.5;
+      Math.random() *
+        1.4 +
+      0.5;
 
     ctx.globalAlpha =
       0.025 +
-      Math.random() * 0.06;
+      Math.random() *
+        0.06;
 
     ctx.fillStyle =
       color;
@@ -865,13 +787,6 @@ function drawParticles(
 
   ctx.globalAlpha = 1;
 }
-
-
-/*
- * ==========================================
- * DOT GRID
- * ==========================================
- */
 
 function drawDotGrid(
   ctx,
@@ -903,8 +818,10 @@ function drawDotGrid(
       ctx.beginPath();
 
       ctx.arc(
-        x + col * gap,
-        y + row * gap,
+        x +
+          col * gap,
+        y +
+          row * gap,
         1.3,
         0,
         Math.PI * 2
@@ -918,13 +835,6 @@ function drawDotGrid(
 
   ctx.globalAlpha = 1;
 }
-
-
-/*
- * ==========================================
- * BORDER
- * ==========================================
- */
 
 function drawBorder(
   ctx,
@@ -944,13 +854,6 @@ function drawBorder(
     height - 56
   );
 }
-
-
-/*
- * ==========================================
- * ADDED BY
- * ==========================================
- */
 
 function drawAddedBy(
   ctx,
@@ -1027,13 +930,9 @@ function drawAddedBy(
 
   const addedName =
     String(
-      name || "Group Admin"
+      name ||
+        "Group Admin"
     );
-
-  const family =
-    fontReady
-      ? "NotoBengali"
-      : "Arial";
 
   ctx.fillStyle =
     "#ffffff";
@@ -1044,8 +943,8 @@ function drawAddedBy(
       addedName,
       width - 90,
       17,
-      family
-    )}px ${family}`;
+      "NotoBengali"
+    )}px NotoBengali`;
 
   ctx.fillText(
     addedName.length > 25
@@ -1072,13 +971,6 @@ function drawAddedBy(
 
   ctx.restore();
 }
-
-
-/*
- * ==========================================
- * BACKGROUNDS
- * ==========================================
- */
 
 function backgroundCyan(
   ctx,
@@ -1123,10 +1015,26 @@ function backgroundCyan(
 
   ctx.beginPath();
 
-  ctx.moveTo(0, 0);
-  ctx.lineTo(430, 0);
-  ctx.lineTo(120, h);
-  ctx.lineTo(0, h);
+  ctx.moveTo(
+    0,
+    0
+  );
+
+  ctx.lineTo(
+    430,
+    0
+  );
+
+  ctx.lineTo(
+    120,
+    h
+  );
+
+  ctx.lineTo(
+    0,
+    h
+  );
+
   ctx.closePath();
 
   ctx.fill();
@@ -1144,15 +1052,18 @@ function backgroundCyan(
     ctx.beginPath();
 
     ctx.moveTo(
-      820 + i * 30,
+      820 +
+        i * 30,
       0
     );
 
     ctx.quadraticCurveTo(
       1010,
-      80 + i * 18,
+      80 +
+        i * 18,
       w,
-      250 + i * 45
+      250 +
+        i * 45
     );
 
     ctx.stroke();
@@ -1176,7 +1087,6 @@ function backgroundCyan(
     28
   );
 }
-
 
 function backgroundOrange(
   ctx,
@@ -1221,9 +1131,21 @@ function backgroundOrange(
 
   ctx.beginPath();
 
-  ctx.moveTo(0, 0);
-  ctx.lineTo(470, 0);
-  ctx.lineTo(0, 420);
+  ctx.moveTo(
+    0,
+    0
+  );
+
+  ctx.lineTo(
+    470,
+    0
+  );
+
+  ctx.lineTo(
+    0,
+    420
+  );
+
   ctx.closePath();
 
   ctx.fill();
@@ -1234,13 +1156,31 @@ function backgroundOrange(
   ctx.lineWidth = 3;
 
   ctx.beginPath();
-  ctx.moveTo(-50, 560);
-  ctx.lineTo(500, 0);
+
+  ctx.moveTo(
+    -50,
+    560
+  );
+
+  ctx.lineTo(
+    500,
+    0
+  );
+
   ctx.stroke();
 
   ctx.beginPath();
-  ctx.moveTo(50, 600);
-  ctx.lineTo(630, 0);
+
+  ctx.moveTo(
+    50,
+    600
+  );
+
+  ctx.lineTo(
+    630,
+    0
+  );
+
   ctx.stroke();
 
   ctx.strokeStyle =
@@ -1249,8 +1189,17 @@ function backgroundOrange(
   ctx.lineWidth = 1;
 
   ctx.beginPath();
-  ctx.moveTo(680, 600);
-  ctx.lineTo(1200, 80);
+
+  ctx.moveTo(
+    680,
+    600
+  );
+
+  ctx.lineTo(
+    1200,
+    80
+  );
+
   ctx.stroke();
 
   drawDotGrid(
@@ -1271,7 +1220,6 @@ function backgroundOrange(
     25
   );
 }
-
 
 function backgroundPurple(
   ctx,
@@ -1316,10 +1264,26 @@ function backgroundPurple(
 
   ctx.beginPath();
 
-  ctx.moveTo(w, 0);
-  ctx.lineTo(800, 0);
-  ctx.lineTo(1050, 280);
-  ctx.lineTo(w, 350);
+  ctx.moveTo(
+    w,
+    0
+  );
+
+  ctx.lineTo(
+    800,
+    0
+  );
+
+  ctx.lineTo(
+    1050,
+    280
+  );
+
+  ctx.lineTo(
+    w,
+    350
+  );
+
   ctx.closePath();
 
   ctx.fill();
@@ -1372,7 +1336,6 @@ function backgroundPurple(
   );
 }
 
-
 function backgroundBurgundy(
   ctx,
   w,
@@ -1416,9 +1379,21 @@ function backgroundBurgundy(
 
   ctx.beginPath();
 
-  ctx.moveTo(0, 0);
-  ctx.lineTo(420, 0);
-  ctx.lineTo(0, 420);
+  ctx.moveTo(
+    0,
+    0
+  );
+
+  ctx.lineTo(
+    420,
+    0
+  );
+
+  ctx.lineTo(
+    0,
+    420
+  );
+
   ctx.closePath();
 
   ctx.fill();
@@ -1429,13 +1404,31 @@ function backgroundBurgundy(
   ctx.lineWidth = 3;
 
   ctx.beginPath();
-  ctx.moveTo(250, 600);
-  ctx.lineTo(850, 0);
+
+  ctx.moveTo(
+    250,
+    600
+  );
+
+  ctx.lineTo(
+    850,
+    0
+  );
+
   ctx.stroke();
 
   ctx.beginPath();
-  ctx.moveTo(400, 600);
-  ctx.lineTo(1000, 0);
+
+  ctx.moveTo(
+    400,
+    600
+  );
+
+  ctx.lineTo(
+    1000,
+    0
+  );
+
   ctx.stroke();
 
   ctx.strokeStyle =
@@ -1444,8 +1437,17 @@ function backgroundBurgundy(
   ctx.lineWidth = 1;
 
   ctx.beginPath();
-  ctx.moveTo(620, 600);
-  ctx.lineTo(1200, 20);
+
+  ctx.moveTo(
+    620,
+    600
+  );
+
+  ctx.lineTo(
+    1200,
+    20
+  );
+
   ctx.stroke();
 
   drawDotGrid(
@@ -1466,13 +1468,6 @@ function backgroundBurgundy(
     26
   );
 }
-
-
-/*
- * ==========================================
- * DESIGN 1
- * ==========================================
- */
 
 function designOne(
   ctx,
@@ -1495,7 +1490,8 @@ function designOne(
       : "Arial";
 
   if (
-    backgroundType === "orange"
+    backgroundType ===
+    "orange"
   ) {
     backgroundOrange(
       ctx,
@@ -1523,7 +1519,8 @@ function designOne(
       : "#15384f"
   );
 
-  ctx.textAlign = "left";
+  ctx.textAlign =
+    "left";
 
   ctx.fillStyle =
     "rgba(255,255,255,0.62)";
@@ -1551,7 +1548,8 @@ function designOne(
 
   const name =
     String(
-      userName || "New Member"
+      userName ||
+        "New Member"
     );
 
   ctx.fillStyle =
@@ -1587,13 +1585,22 @@ function designOne(
   ctx.strokeStyle =
     accent;
 
-  ctx.globalAlpha = 0.45;
+  ctx.globalAlpha =
+    0.45;
+
   ctx.lineWidth = 2;
 
   ctx.beginPath();
 
-  ctx.moveTo(420, 300);
-  ctx.lineTo(1120, 300);
+  ctx.moveTo(
+    420,
+    300
+  );
+
+  ctx.lineTo(
+    1120,
+    300
+  );
 
   ctx.stroke();
 
@@ -1694,13 +1701,6 @@ function designOne(
   );
 }
 
-
-/*
- * ==========================================
- * DESIGN 2
- * ==========================================
- */
-
 function designTwo(
   ctx,
   data,
@@ -1722,7 +1722,8 @@ function designTwo(
       : "Arial";
 
   if (
-    backgroundType === "burgundy"
+    backgroundType ===
+    "burgundy"
   ) {
     backgroundBurgundy(
       ctx,
@@ -1750,7 +1751,8 @@ function designTwo(
       : "#302047"
   );
 
-  ctx.textAlign = "left";
+  ctx.textAlign =
+    "left";
 
   ctx.fillStyle =
     "rgba(255,255,255,0.65)";
@@ -1778,7 +1780,8 @@ function designTwo(
 
   const name =
     String(
-      userName || "New Member"
+      userName ||
+        "New Member"
     );
 
   ctx.fillStyle =
@@ -1814,13 +1817,22 @@ function designTwo(
   ctx.strokeStyle =
     accent;
 
-  ctx.globalAlpha = 0.40;
+  ctx.globalAlpha =
+    0.40;
+
   ctx.lineWidth = 2;
 
   ctx.beginPath();
 
-  ctx.moveTo(100, 292);
-  ctx.lineTo(870, 292);
+  ctx.moveTo(
+    100,
+    292
+  );
+
+  ctx.lineTo(
+    870,
+    292
+  );
 
   ctx.stroke();
 
@@ -1843,7 +1855,9 @@ function designTwo(
   ctx.strokeStyle =
     accent;
 
-  ctx.globalAlpha = 0.38;
+  ctx.globalAlpha =
+    0.38;
+
   ctx.lineWidth = 1;
 
   roundedRect(
@@ -1892,12 +1906,20 @@ function designTwo(
   ctx.strokeStyle =
     accent;
 
-  ctx.globalAlpha = 0.28;
+  ctx.globalAlpha =
+    0.28;
 
   ctx.beginPath();
 
-  ctx.moveTo(455, 340);
-  ctx.lineTo(455, 393);
+  ctx.moveTo(
+    455,
+    340
+  );
+
+  ctx.lineTo(
+    455,
+    393
+  );
 
   ctx.stroke();
 
@@ -1962,20 +1984,17 @@ function designTwo(
   );
 }
 
-
-/*
- * ==========================================
- * CREATE BANNER
- * ==========================================
- */
-
 async function createWelcomeBanner(
   userID,
   userName,
   groupName,
   memberCount,
   addedByID,
-  addedByName
+  addedByName,
+  api,
+  memberInfo,
+  addedByInfo,
+  threadInfo
 ) {
   await fs.ensureDir(
     CACHE_DIR
@@ -1993,7 +2012,9 @@ async function createWelcomeBanner(
     );
 
   const ctx =
-    canvas.getContext("2d");
+    canvas.getContext(
+      "2d"
+    );
 
   const design =
     getNextDesign();
@@ -2004,10 +2025,16 @@ async function createWelcomeBanner(
   ] =
     await Promise.all([
       getProfilePicture(
-        userID
+        userID,
+        api,
+        memberInfo,
+        threadInfo
       ),
       getProfilePicture(
-        addedByID
+        addedByID,
+        api,
+        addedByInfo,
+        threadInfo
       )
     ]);
 
@@ -2034,9 +2061,7 @@ async function createWelcomeBanner(
       height,
       "rgba(85,214,255,0.42)"
     );
-  }
-
-  else if (design === 1) {
+  } else if (design === 1) {
     designOne(
       ctx,
       data,
@@ -2050,9 +2075,7 @@ async function createWelcomeBanner(
       height,
       "rgba(255,180,92,0.44)"
     );
-  }
-
-  else if (design === 2) {
+  } else if (design === 2) {
     designTwo(
       ctx,
       data,
@@ -2066,9 +2089,7 @@ async function createWelcomeBanner(
       height,
       "rgba(201,155,255,0.42)"
     );
-  }
-
-  else {
+  } else {
     designTwo(
       ctx,
       data,
@@ -2094,23 +2115,22 @@ async function createWelcomeBanner(
 
   await fs.writeFile(
     imagePath,
-    canvas.toBuffer("image/png")
+    canvas.toBuffer(
+      "image/png"
+    )
   );
 
   return imagePath;
 }
 
-
-/*
- * ==========================================
- * EVENT
- * ==========================================
- */
-
 module.exports.run =
   async function ({
     api,
-    event
+    event,
+    Users,
+    Threads,
+    Currencies,
+    models
   }) {
     try {
       if (!event) {
@@ -2133,7 +2153,8 @@ module.exports.run =
         !Array.isArray(
           data.addedParticipants
         ) ||
-        data.addedParticipants.length === 0
+        !data.addedParticipants
+          .length
       ) {
         return;
       }
@@ -2145,42 +2166,31 @@ module.exports.run =
         return;
       }
 
-      /*
-       * Bot ID
-       */
+      const activeApi =
+        api ||
+        (global.client &&
+          global.client.api) ||
+        global.api;
 
-      let botID = "";
-
-      try {
-        if (
-          api &&
-          typeof api.getCurrentUserID ===
-            "function"
-        ) {
-          botID =
-            String(
-              api.getCurrentUserID()
-            );
-        }
-      } catch {
-        botID = "";
+      if (!activeApi) {
+        return;
       }
 
-
-      /*
-       * Participants
-       */
+      let botID = "";
+      try {
+        if (typeof activeApi.getCurrentUserID === "function") {
+          botID = String(
+            activeApi.getCurrentUserID()
+          );
+        }
+      } catch (e) {
+        botID = "";
+      }
 
       const participants =
         data.addedParticipants;
 
-
-      /*
-       * Don't welcome the bot itself
-       */
-
       const botJoined =
-        botID &&
         participants.some(
           participant =>
             String(
@@ -2192,32 +2202,26 @@ module.exports.run =
         return;
       }
 
-
-      /*
-       * Thread information
-       */
-
       let threadInfo = null;
-
       try {
-        threadInfo =
-          await api.getThreadInfo(
-            threadID
-          );
-      } catch (error) {
-        console.error(
-          "[WELCOME THREAD INFO ERROR]",
-          error.message
-        );
+        if (typeof activeApi.getThreadInfo === "function") {
+          threadInfo =
+            await activeApi.getThreadInfo(
+              threadID
+            );
+        }
+      } catch (e) {
+        threadInfo = null;
       }
 
-
       const groupName =
-        threadInfo &&
-        threadInfo.threadName
-          ? threadInfo.threadName
-          : "Group Chat";
-
+        (threadInfo &&
+          threadInfo.threadName) ||
+        (global.data &&
+          global.data.threadInfo &&
+          global.data.threadInfo.get(String(threadID)) &&
+          global.data.threadInfo.get(String(threadID)).threadName) ||
+        "Group Chat";
 
       const memberCount =
         threadInfo &&
@@ -2229,93 +2233,110 @@ module.exports.run =
               .length
           : 0;
 
-
-      /*
-       * Who added the member
-       */
-
       const addedByID =
         event.author ||
         event.senderID ||
         data.author ||
         null;
 
-
       let addedByName =
         "Group Admin";
 
+      let addedByInfo = null;
 
       if (addedByID) {
-        const info =
+        addedByInfo =
           await getUserInfoSafe(
-            api,
+            activeApi,
             addedByID
           );
 
-        if (info) {
+        if (addedByInfo) {
           addedByName =
-            info.name ||
-            info.fullName ||
-            info.firstName ||
+            addedByInfo.name ||
+            addedByInfo.fullName ||
+            addedByInfo.firstName ||
             "Group Admin";
         }
       }
 
-
-      /*
-       * Welcome every new participant
-       */
-
       for (
-        const participant of participants
+        const participant of
+          participants
       ) {
-        try {
-          const userID =
-            participant.userFbId;
+        const userID =
+          participant.userFbId;
 
-          if (!userID) {
-            continue;
+        if (!userID) {
+          continue;
+        }
+
+        let memberInfo =
+          await getUserInfoSafe(
+            activeApi,
+            userID
+          );
+
+        const userName =
+          (memberInfo &&
+            (memberInfo.name ||
+              memberInfo.fullName)) ||
+          participant.fullName ||
+          participant.name ||
+          "New Member";
+
+        if (global.data) {
+          if (global.data.userName && userName) {
+            global.data.userName.set(
+              String(userID),
+              userName
+            );
           }
+          if (
+            global.data.allUserID &&
+            !global.data.allUserID.includes(
+              String(userID)
+            )
+          ) {
+            global.data.allUserID.push(
+              String(userID)
+            );
+          }
+        }
 
-          const userName =
-            participant.fullName ||
-            participant.name ||
-            "New Member";
+        let imagePath =
+          null;
 
-
-          /*
-           * Create image
-           */
-
-          const imagePath =
+        try {
+          imagePath =
             await createWelcomeBanner(
               userID,
               userName,
               groupName,
               memberCount,
               addedByID,
-              addedByName
+              addedByName,
+              activeApi,
+              memberInfo,
+              addedByInfo,
+              threadInfo
             );
 
-
-          /*
-           * Welcome message
-           */
+          const botName =
+            (global.config &&
+              global.config.BOTNAME) ||
+            "𝐁𝐎𝐓";
 
           const messageBody =
-`🩸 "রক্ত দিন, জীবন বাঁচান"
+`"রক্ত দিন, জীবন বাঁচান"
 
-প্রিয় ${groupName}-এ স্বাগতম। বান্দরবান ব্লাড ডোনার'স ক্লাবে যুক্ত হওয়ার জন্য আপনাকে আন্তরিক অভিনন্দন ও ধন্যবাদ।
+›› প্রিয় ${userName} স্বাগতম বান্দরবান ব্লাড ডোনার'স ক্লাবে যুক্ত হওয়ার জন্য আপনাকে আন্তরিক অভিনন্দন সহ ধন্যবাদ ।
+আশা করছি আপনি আমাদের মানবিক প্লাটর্ফমে মানবতার জন্য আপনার মূল্যবান সময়টুকু ব্যয় করবেন।
 
-আশা করছি আপনি আমাদের মানবিক প্ল্যাটফর্মে মানবতার জন্য আপনার মূল্যবান সময়টুকু ব্যয় করবেন।
-
-🌺 ধন্যবাদ
-— ◈━━꯭${botName}꯭━━◈ এডমিন প্যানেল`;
-
-
-          /*
-           * Send message
-           */
+ধন্যবাদ
+বান্দরবান ব্লাড ডোনার'স ক্লাব
+ এডমিন প্যানেল
+`;
 
           await new Promise(
             (
@@ -2332,71 +2353,59 @@ module.exports.run =
                 reject
               );
 
-              api.sendMessage(
+              activeApi.sendMessage(
                 {
                   body:
                     messageBody,
-
                   attachment:
                     stream,
-
                   mentions: [
                     {
                       tag:
                         userName,
-
                       id:
                         userID
                     }
                   ]
                 },
-
                 threadID,
-
                 error => {
                   try {
                     stream.destroy();
                   } catch {}
 
                   if (error) {
-                    reject(error);
-                  } else {
-                    resolve();
+                    reject(
+                      error
+                    );
+                    return;
                   }
+
+                  resolve();
                 }
               );
             }
           );
-
-
-          console.log(
-            `[WELCOME] Sent welcome message to ${userName}`
+        } catch (error) {
+          console.error(
+            "[WELCOME SEND ERROR]",
+            error
           );
-
-
-          /*
-           * Delete temporary image
-           */
-
+        } finally {
           if (
             imagePath &&
             fs.existsSync(
               imagePath
             )
           ) {
-            await fs
-              .remove(imagePath)
-              .catch(() => {});
+            await fs.remove(
+              imagePath
+            ).catch(
+              () => {}
+            );
           }
-
-        } catch (error) {
-          console.error(
-            "[WELCOME SEND ERROR]",
-            error
-          );
         }
       }
-
     } catch (error) {
       console.error(
         "[WELCOME ERROR]",
